@@ -6,7 +6,17 @@ import { InputSystem } from './InputSystem'
 import { MovementSystem } from './MovementSystem'
 import { CameraSystem } from './CameraSystem'
 import { UIManager } from './UIManager'
-import { GROUND_SIZE, GROUND_FRICTION, JUMP_FORCE } from './config'
+import {
+  GROUND_SIZE,
+  GROUND_FRICTION,
+  JUMP_FORCE,
+  BALL_RADIUS,
+  BALL_MASS,
+  BALL_RESTITUTION,
+  BALL_FRICTION,
+  GRAVITY_SCALE,
+  STATIC_BALL_POSITIONS,
+} from './config'
 
 async function main() {
   const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -61,6 +71,41 @@ async function main() {
     groundBody
   )
 
+  // --- Static balls ---
+  const ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 32, 32)
+  const ballMat = new THREE.MeshStandardMaterial({
+    color: 0x4444ff,
+    metalness: 0.85,
+    roughness: 0.15,
+  })
+
+  // Store pairs for reset
+  const staticBalls: { mesh: THREE.Mesh; body: RAPIER.RigidBody; startPos: { x: number; y: number; z: number } }[] = []
+
+  for (const pos of STATIC_BALL_POSITIONS) {
+    const mesh = new THREE.Mesh(ballGeo, ballMat)
+    mesh.castShadow = true
+    scene.add(mesh)
+
+    const body = physicsWorld.world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(pos.x, pos.y, pos.z)
+        .setLinearDamping(0.3)
+        .setAngularDamping(0.5)
+        .setGravityScale(GRAVITY_SCALE)
+    )
+
+    physicsWorld.world.createCollider(
+      RAPIER.ColliderDesc.ball(BALL_RADIUS)
+        .setMass(BALL_MASS)
+        .setFriction(BALL_FRICTION)
+        .setRestitution(BALL_RESTITUTION),
+      body
+    )
+
+    staticBalls.push({ mesh, body, startPos: { ...pos } })
+  }
+
   const input = new InputSystem()
   input.init()
 
@@ -71,13 +116,21 @@ async function main() {
   const cameraSystem = new CameraSystem(camera)
   const ui = new UIManager()
 
-  // Прыжок и ресет прямо в listener — не зависит от loop
-  input.onJump = () => {
-    player.jump(JUMP_FORCE)
-  }
+  input.onJump = () => { player.jump(JUMP_FORCE) }
 
   input.onReset = () => {
+    // Reset player
     player.reset()
+
+    // Reset all static balls to start positions
+    for (const { body, startPos } of staticBalls) {
+      body.wakeUp()
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      body.resetForces(true)
+      body.resetTorques(true)
+      body.setTranslation({ x: startPos.x, y: startPos.y, z: startPos.z }, true)
+    }
   }
 
   function loop() {
@@ -85,14 +138,22 @@ async function main() {
 
     const inputState = input.getState()
 
-    player.checkGrounded()
-
     cameraSystem.update(player)
     movement.cameraYaw = cameraSystem.getCameraYaw(player)
     movement.apply(player, inputState)
 
     physicsWorld.step()
+
+    player.checkGrounded()
     player.syncMesh()
+
+    // Sync static ball meshes
+    for (const { mesh, body } of staticBalls) {
+      const pos = body.translation()
+      const rot = body.rotation()
+      mesh.position.set(pos.x, pos.y, pos.z)
+      mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w)
+    }
 
     const vel = player.getVelocity()
     player.updateVisualRotation(vel.x, vel.z)
